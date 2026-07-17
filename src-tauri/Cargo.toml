@@ -89,6 +89,9 @@ rquickjs = { version = "0.8", features = ["bindgen"] }
 objc2 = "0.5"
 objc2-app-kit = { version = "0.2", features = ["NSColor"] }
 
+[patch.crates-io]
+wry = { path = "../vendor/wry-0.23.4" }
+
 # Optimize release binary size to help reduce AppImage footprint
 [profile.release]
 codegen-units = 1
