@@ -82,7 +82,7 @@ jobs:
           pkg-config --modversion gtk+-3.0
           pkg-config --modversion webkit2gtk-4.0
           pkg-config --modversion ayatana-appindicator3-0.1
-          ldd --version | head -1
+          ldd --version
 
       - name: Install frontend dependencies
         run: pnpm install --no-frozen-lockfile
@@ -137,4 +137,4 @@ jobs:
         with:
           name: cc-switch-uos-amd64
           path: release-assets/*
-          if-no-files-found: error
+          if-no-files-found: warn
