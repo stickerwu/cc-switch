@@ -6,7 +6,7 @@ use gdk::{Cursor, EventMask, WindowEdge};
 use gio::Cancellable;
 use glib::signal::Inhibit;
 use gtk::prelude::*;
-use webkit2gtk::prelude::SettingsExt;
+use webkit2gtk::SettingsExt;
 #[cfg(any(debug_assertions, feature = "devtools"))]
 use std::sync::{
   atomic::{AtomicBool, Ordering},
