@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: uos-deb-${{ github.ref }}
@@ -135,19 +135,54 @@ jobs:
           fi
 
       - name: Collect and verify deb
+        id: package
         shell: bash
         run: |
           set -euxo pipefail
           mkdir -p release-assets
           VERSION="$(node -p "require('./package.json').version")"
+          RELEASE_TAG="v${VERSION}-uos.${GITHUB_RUN_NUMBER}"
           DEB="$(find src-tauri/target/release/bundle -name '*.deb' -type f | head -1)"
           test -n "$DEB"
           CONTROL="$(dpkg-deb -I "$DEB")"
           printf '%s\n' "$CONTROL" | tee release-assets/control.txt
           printf '%s\n' "$CONTROL" | grep -E 'Depends: .*libwebkit2gtk-4\.0'
           printf '%s\n' "$CONTROL" | grep -E 'Depends: .*libayatana-appindicator3'
-          cp "$DEB" "release-assets/CC-Switch-v${VERSION}-UOS-amd64.deb"
-          sha256sum release-assets/* | tee release-assets/SHA256SUMS
+          PACKAGE="release-assets/CC-Switch-v${VERSION}-UOS-amd64.deb"
+          cp "$DEB" "$PACKAGE"
+          sha256sum "$PACKAGE" | tee release-assets/SHA256SUMS
+          {
+            echo "version=$VERSION"
+            echo "release_tag=$RELEASE_TAG"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish permanent UOS release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.package.outputs.release_tag }}
+          name: CC Switch v${{ steps.package.outputs.version }} for UOS (build ${{ github.run_number }})
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          prerelease: false
+          body: |
+            UOS amd64 package built from the dedicated `uos` branch.
+
+            - Source commit: `${{ github.sha }}`
+            - Build environment: Debian buster
+            - WebKitGTK ABI: 4.0
+            - Package type: Debian `.deb`
+
+            Install with:
+
+            ```bash
+            sudo apt install ./CC-Switch-v${{ steps.package.outputs.version }}-UOS-amd64.deb
+            ```
+          files: |
+            release-assets/*.deb
+            release-assets/SHA256SUMS
+            release-assets/control.txt
+          fail_on_unmatched_files: true
 
       - name: Upload UOS deb artifact
         if: always()
