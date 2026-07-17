@@ -1,0 +1,137 @@
+name: Monitor Upstream Releases
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/upstream-monitor.yml
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: monitor-upstream-releases
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: farion1231/cc-switch
+  UOS_BRANCH: uos
+
+jobs:
+  check-release:
+    name: Check latest stable release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Compare upstream and UOS versions
+        id: compare
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          release_json="$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest")"
+          upstream_tag="$(jq -er '.tag_name' <<<"$release_json")"
+          upstream_version="${upstream_tag#v}"
+          release_url="$(jq -er '.html_url' <<<"$release_json")"
+          published_at="$(jq -er '.published_at' <<<"$release_json")"
+
+          package_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/contents/package.json?ref=${UOS_BRANCH}" \
+              --jq '.content' | tr -d '\n' | base64 --decode
+          )"
+          uos_version="$(jq -er '.version' <<<"$package_json")"
+
+          needs_sync=false
+          if [[ "$upstream_version" != "$uos_version" ]]; then
+            needs_sync=true
+          fi
+
+          {
+            echo "upstream_tag=$upstream_tag"
+            echo "upstream_version=$upstream_version"
+            echo "uos_version=$uos_version"
+            echo "release_url=$release_url"
+            echo "published_at=$published_at"
+            echo "needs_sync=$needs_sync"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Upstream release check"
+            echo
+            echo "- Upstream: \`$upstream_tag\`"
+            echo "- UOS branch: \`v$uos_version\`"
+            echo "- Needs adaptation: \`$needs_sync\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create upstream adaptation issue
+        if: steps.compare.outputs.needs_sync == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_TAG: ${{ steps.compare.outputs.upstream_tag }}
+          UPSTREAM_VERSION: ${{ steps.compare.outputs.upstream_version }}
+          UOS_VERSION: ${{ steps.compare.outputs.uos_version }}
+          RELEASE_URL: ${{ steps.compare.outputs.release_url }}
+          PUBLISHED_AT: ${{ steps.compare.outputs.published_at }}
+        run: |
+          set -euo pipefail
+
+          title="[Upstream] ${UPSTREAM_TAG} needs UOS adaptation"
+          existing_issue="$(
+            gh issue list \
+              --repo "$GITHUB_REPOSITORY" \
+              --state all \
+              --limit 1000 \
+              --json title,url |
+              jq -r --arg title "$title" \
+                '[.[] | select(.title == $title)][0].url // empty'
+          )"
+
+          if [[ -n "$existing_issue" ]]; then
+            echo "Issue already exists: $existing_issue" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          gh label create upstream-release \
+            --repo "$GITHUB_REPOSITORY" \
+            --description "A new upstream release needs UOS review" \
+            --color FBCA04 \
+            --force
+
+          cat > "$RUNNER_TEMP/upstream-release.md" <<EOF
+          A new stable release is available upstream and the UOS branch has not been adapted yet.
+
+          - Upstream release: [${UPSTREAM_TAG}](${RELEASE_URL})
+          - Published at: \`${PUBLISHED_AT}\`
+          - Current UOS version: \`v${UOS_VERSION}\`
+
+          UOS compatibility is maintained on the \`uos\` branch with Tauri 1 and WebKitGTK 4.0, so upstream changes must be reviewed before merging.
+
+          Checklist:
+
+          - [ ] Review changes from \`v${UOS_VERSION}\` to \`${UPSTREAM_TAG}\`
+          - [ ] Port compatible changes to the \`uos\` branch
+          - [ ] Keep the UOS-specific Tauri 1 dependency pins and patches
+          - [ ] Update the application version to \`${UPSTREAM_VERSION}\`
+          - [ ] Push \`uos\` and verify the UOS Deb Build workflow
+
+          This issue was created automatically by the upstream release monitor.
+          EOF
+
+          issue_url="$(
+            gh issue create \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$title" \
+              --body-file "$RUNNER_TEMP/upstream-release.md" \
+              --label upstream-release \
+              --assignee "$GITHUB_REPOSITORY_OWNER"
+          )"
+
+          echo "Created notification issue: $issue_url" >> "$GITHUB_STEP_SUMMARY"
