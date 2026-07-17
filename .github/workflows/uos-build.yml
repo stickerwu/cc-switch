@@ -39,6 +39,8 @@ jobs:
             git \
             xz-utils \
             python3 \
+            perl \
+            cmake \
             build-essential \
             pkg-config \
             libssl-dev \
@@ -91,7 +93,19 @@ jobs:
           CI: true
         run: |
           set -euxo pipefail
-          pnpm tauri build --bundles deb --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          mkdir -p release-assets
+          set +e
+          pnpm tauri build --bundles deb --config '{"bundle":{"createUpdaterArtifacts":false}}' 2>&1 | tee release-assets/build.log
+          status="${PIPESTATUS[0]}"
+          set -e
+          if [ "$status" -ne 0 ]; then
+            tail -n 80 release-assets/build.log | while IFS= read -r line; do
+              line="${line//'%'/'%25'}"
+              line="${line//$'\r'/'%0D'}"
+              echo "::error::$line"
+            done
+            exit "$status"
+          fi
 
       - name: Collect and verify deb
         shell: bash
@@ -109,6 +123,7 @@ jobs:
           sha256sum release-assets/* | tee release-assets/SHA256SUMS
 
       - name: Upload UOS deb artifact
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: cc-switch-uos-amd64
