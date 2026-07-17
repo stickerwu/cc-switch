@@ -67,9 +67,9 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          corepack enable
-          corepack prepare pnpm@10.12.3 --activate
+          npm install -g pnpm@10.12.3
           node --version
+          npm --version
           pnpm --version
           rustc --version
 
