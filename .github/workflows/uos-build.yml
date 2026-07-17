@@ -100,7 +100,11 @@ jobs:
           set -e
           if [ "$status" -ne 0 ]; then
             awk '
-              /error(\[[A-Z0-9]+\])?:|could not compile|failed to build app/ {
+              {
+                clean = $0
+                gsub(/\033\[[0-9;]*[[:alpha:]]/, "", clean)
+              }
+              clean ~ /error(\[[A-Z0-9]+\])?:|could not compile|failed to build app/ {
                 for (i = NR - 8; i <= NR + 30; i++) want[i] = 1
               }
               { lines[NR] = $0 }
