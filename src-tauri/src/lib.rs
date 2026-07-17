@@ -944,7 +944,7 @@ pub fn run() {
                     let _ = window.with_webview(|webview| {
                         use webkit2gtk::{WebViewExt, SettingsExt, HardwareAccelerationPolicy};
                         let wk_webview = webview.inner();
-                        if let Some(settings) = WebViewExt::settings(&wk_webview) {
+                        if let Some(settings) = WebViewExt::settings(&*wk_webview) {
                             SettingsExt::set_hardware_acceleration_policy(&settings, HardwareAccelerationPolicy::Never);
                             log::info!("已禁用 WebKitGTK 硬件加速");
                         }
@@ -1644,4 +1644,5 @@ pub fn restart_process(app_handle: &tauri::AppHandle) -> ! {
     remove_tray_icon_before_exit(app_handle);
     destroy_single_instance_lock(app_handle);
     tauri::api::process::restart(&app_handle.env());
+    std::process::exit(0);
 }
