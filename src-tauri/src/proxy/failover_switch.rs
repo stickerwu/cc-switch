@@ -9,7 +9,7 @@ use crate::database::Database;
 use crate::error::AppError;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 use tokio::sync::RwLock;
 
 /// 故障转移切换管理器
@@ -111,8 +111,8 @@ impl FailoverSwitchManager {
                 }
 
                 if let Ok(new_menu) = crate::tray::create_tray_menu(app, app_state.inner()) {
-                    if let Some(tray) = app.tray_by_id(crate::tray::TRAY_ID) {
-                        if let Err(e) = tray.set_menu(Some(new_menu)) {
+                    if let Some(tray) = app.tray_handle_by_id(crate::tray::TRAY_ID) {
+                        if let Err(e) = tray.set_menu(new_menu) {
                             log::error!("[Failover] 更新托盘菜单失败: {e}");
                         }
                     }
@@ -125,7 +125,7 @@ impl FailoverSwitchManager {
                 "providerId": provider_id,
                 "source": "failover"  // 标识来源是故障转移
             });
-            if let Err(e) = app.emit("provider-switched", event_data) {
+            if let Err(e) = app.emit_all("provider-switched", event_data) {
                 log::error!("[Failover] 发射事件失败: {e}");
             }
         }

@@ -8,9 +8,7 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use tauri::AppHandle;
-use tauri::State;
-use tauri_plugin_opener::OpenerExt;
+use tauri::{AppHandle, Manager, State};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -27,8 +25,7 @@ pub async fn open_external(app: AppHandle, url: String) -> Result<bool, String> 
         format!("https://{url}")
     };
 
-    app.opener()
-        .open_url(&url, None::<String>)
+    tauri::api::shell::open(&app.shell_scope(), &url, None)
         .map_err(|e| format!("打开链接失败: {e}"))?;
 
     Ok(true)
@@ -53,12 +50,11 @@ pub async fn copy_text_to_clipboard(text: String) -> Result<bool, String> {
 /// 检查更新
 #[tauri::command]
 pub async fn check_for_updates(handle: AppHandle) -> Result<bool, String> {
-    handle
-        .opener()
-        .open_url(
-            "https://github.com/farion1231/cc-switch/releases/latest",
-            None::<String>,
-        )
+    tauri::api::shell::open(
+        &handle.shell_scope(),
+        "https://github.com/farion1231/cc-switch/releases/latest",
+        None,
+    )
         .map_err(|e| format!("打开更新页面失败: {e}"))?;
 
     Ok(true)

@@ -15,7 +15,7 @@ use crate::services::provider::{
 use serde_json::{json, Map, Value};
 use std::str::FromStr;
 use std::sync::Arc;
-use tauri::Emitter;
+use tauri::Manager;
 use tokio::sync::RwLock;
 
 /// 用于接管 Live 配置时的占位符（避免客户端提示缺少 key，同时不泄露真实 Token）
@@ -726,7 +726,7 @@ impl ProxyService {
                         )
                     {
                         if let Some(handle) = self.app_handle.read().await.as_ref() {
-                            let _ = handle.emit(
+                            let _ = handle.emit_all(
                                 "proxy-official-warning",
                                 serde_json::json!({
                                     "appType": app_type_str,

@@ -20,22 +20,14 @@ default = []
 test-hooks = []
 
 [build-dependencies]
-tauri-build = { version = "2.4.0", features = [] }
+tauri-build = { version = "=1.2.1", features = [] }
 
 [dependencies]
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
-tauri = { version = "2.8.2", features = ["tray-icon", "protocol-asset", "image-png"] }
-tauri-plugin-log = "2"
-tauri-plugin-opener = "2"
-tauri-plugin-process = "2"
-tauri-plugin-updater = "2"
-tauri-plugin-dialog = "2"
-tauri-plugin-store = "2"
-tauri-plugin-deep-link = "2"
-tauri-plugin-window-state = "2"
+tauri = { version = "=1.2.5", features = ["api-all", "custom-protocol", "icon-png", "protocol-asset", "system-tray"] }
 dirs = "5.0"
 toml = "0.8"
 toml_edit = "0.22"
@@ -82,11 +74,8 @@ hmac = "0.12"
 json5 = "0.4"
 json-five = "0.3.1"
 
-[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
-tauri-plugin-single-instance = "2"
-
 [target.'cfg(target_os = "linux")'.dependencies]
-webkit2gtk = { version = "2.0.1", features = ["v2_16"] }
+webkit2gtk = { version = "0.18.2", features = ["v2_22"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"

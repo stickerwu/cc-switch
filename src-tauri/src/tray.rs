@@ -2,10 +2,7 @@
 //!
 //! 负责系统托盘图标和菜单的创建、更新和事件处理。
 
-use once_cell::sync::Lazy;
-use tauri::menu::{CheckMenuItem, Menu, MenuBuilder, MenuItem, Submenu, SubmenuBuilder};
-use tauri::{Emitter, Manager};
-use tauri_plugin_opener::OpenerExt;
+use tauri::{CustomMenuItem, Manager, SystemTrayMenu, SystemTrayMenuItem, SystemTraySubmenu};
 
 use crate::app_config::AppType;
 use crate::error::AppError;
@@ -38,12 +35,6 @@ const TIER_LABEL_GROUPS: &[(&str, &[&str])] = &[
     ("f", GEMINI_FLASH_TIER_NAMES),
     ("l", GEMINI_FLASH_LITE_TIER_NAMES),
 ];
-
-/// 每个 app 分区的子菜单句柄，用于 usage 更新时就地改 label 而非整菜单重建。
-/// `create_tray_menu` 每次重建都会整表覆盖写入，保证句柄始终指向当前活跃菜单。
-static TRAY_SECTION_SUBMENUS: Lazy<
-    std::sync::Mutex<std::collections::HashMap<AppType, Submenu<tauri::Wry>>>,
-> = Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 /// 托盘菜单文本（国际化）
 #[derive(Clone, Copy)]
@@ -357,7 +348,7 @@ pub fn handle_profile_tray_event(app: &tauri::AppHandle, event_id: &str) -> bool
             }
         }
         // 通知主窗口刷新（profileId=null 表示该分组已清除当前项目）
-        if let Err(e) = app.emit(
+        if let Err(e) = app.emit_all(
             "profile-applied",
             serde_json::json!({ "profileId": null, "scope": scope.as_str() }),
         ) {
@@ -524,8 +515,8 @@ fn handle_auto_click(app: &tauri::AppHandle, app_type: &AppType) -> Result<(), A
 
         // 4) 更新托盘菜单
         if let Ok(new_menu) = create_tray_menu(app, app_state.inner()) {
-            if let Some(tray) = app.tray_by_id(TRAY_ID) {
-                let _ = tray.set_menu(Some(new_menu));
+            if let Some(tray) = app.tray_handle_by_id(TRAY_ID) {
+                let _ = tray.set_menu(new_menu);
             }
         }
 
@@ -536,11 +527,11 @@ fn handle_auto_click(app: &tauri::AppHandle, app_type: &AppType) -> Result<(), A
             "autoFailoverEnabled": true,
             "providerId": p1_provider_id
         });
-        if let Err(e) = app.emit("proxy-flags-changed", event_data.clone()) {
+        if let Err(e) = app.emit_all("proxy-flags-changed", event_data.clone()) {
             log::error!("发射 proxy-flags-changed 事件失败: {e}");
         }
         // 发射 provider-switched 事件（保持向后兼容，Auto 切换也算一种切换）
-        if let Err(e) = app.emit("provider-switched", event_data) {
+        if let Err(e) = app.emit_all("provider-switched", event_data) {
             log::error!("发射 provider-switched 事件失败: {e}");
         }
     }
@@ -568,8 +559,8 @@ fn handle_provider_click(
 
         // 更新托盘菜单
         if let Ok(new_menu) = create_tray_menu(app, app_state.inner()) {
-            if let Some(tray) = app.tray_by_id(TRAY_ID) {
-                let _ = tray.set_menu(Some(new_menu));
+            if let Some(tray) = app.tray_handle_by_id(TRAY_ID) {
+                let _ = tray.set_menu(new_menu);
             }
         }
 
@@ -580,11 +571,11 @@ fn handle_provider_click(
             "autoFailoverEnabled": false,
             "providerId": provider_id
         });
-        if let Err(e) = app.emit("proxy-flags-changed", event_data.clone()) {
+        if let Err(e) = app.emit_all("proxy-flags-changed", event_data.clone()) {
             log::error!("发射 proxy-flags-changed 事件失败: {e}");
         }
         // 发射 provider-switched 事件（保持向后兼容）
-        if let Err(e) = app.emit("provider-switched", event_data) {
+        if let Err(e) = app.emit_all("provider-switched", event_data) {
             log::error!("发射 provider-switched 事件失败: {e}");
         }
     }
@@ -593,35 +584,20 @@ fn handle_provider_click(
 
 /// 创建动态托盘菜单
 pub fn create_tray_menu(
-    app: &tauri::AppHandle,
+    _app: &tauri::AppHandle,
     app_state: &AppState,
-) -> Result<Menu<tauri::Wry>, AppError> {
+) -> Result<SystemTrayMenu, AppError> {
     let app_settings = crate::settings::get_settings();
     let tray_texts = TrayTexts::from_language(app_settings.language.as_deref().unwrap_or("zh"));
 
     // Get visible apps setting, default to all visible
     let visible_apps = app_settings.visible_apps.unwrap_or_default();
 
-    let mut menu_builder = MenuBuilder::new(app);
-    let mut section_handles: std::collections::HashMap<AppType, Submenu<tauri::Wry>> =
-        std::collections::HashMap::new();
-
     // 顶部：打开主界面 / 打开官方网站
-    let show_main_item =
-        MenuItem::with_id(app, "show_main", tray_texts.show_main, true, None::<&str>)
-            .map_err(|e| AppError::Message(format!("创建打开主界面菜单失败: {e}")))?;
-    let open_website_item = MenuItem::with_id(
-        app,
-        "open_website",
-        tray_texts.open_website,
-        true,
-        None::<&str>,
-    )
-    .map_err(|e| AppError::Message(format!("创建打开官方网站菜单失败: {e}")))?;
-    menu_builder = menu_builder
-        .item(&show_main_item)
-        .item(&open_website_item)
-        .separator();
+    let mut menu = SystemTrayMenu::new()
+        .add_item(CustomMenuItem::new("show_main", tray_texts.show_main))
+        .add_item(CustomMenuItem::new("open_website", tray_texts.open_website))
+        .add_native_item(SystemTrayMenuItem::Separator);
 
     // Pre-compute proxy running state (used to disable official providers in tray menu)
     let is_proxy_running = futures::executor::block_on(app_state.proxy_service.is_running());
@@ -642,11 +618,7 @@ pub fn create_tray_menu(
         if providers.is_empty() {
             // 空供应商：显示禁用的菜单项
             let label = format!("{} {}", section.header_label, tray_texts.no_providers_label);
-            let empty_item = MenuItem::with_id(app, section.empty_id, &label, false, None::<&str>)
-                .map_err(|e| {
-                    AppError::Message(format!("创建{}空提示失败: {e}", section.log_name))
-                })?;
-            menu_builder = menu_builder.item(&empty_item);
+            menu = menu.add_item(CustomMenuItem::new(section.empty_id, label).disabled());
         } else {
             let current_provider = providers.get(&current_id);
             let submenu_label = match current_provider {
@@ -657,7 +629,6 @@ pub fn create_tray_menu(
                 }
                 None => section.header_label.to_string(),
             };
-            let submenu_id = format!("submenu_{}", app_type_str);
 
             // Check if this app is under proxy takeover (for disabling official providers)
             let is_app_taken_over = is_proxy_running
@@ -669,7 +640,7 @@ pub fn create_tray_menu(
                         .proxy_service
                         .detect_takeover_in_live_config_for_app(&section.app_type));
 
-            let mut submenu_builder = SubmenuBuilder::with_id(app, &submenu_id, &submenu_label);
+            let mut submenu_menu = SystemTrayMenu::new();
 
             for (id, provider) in sort_providers(&providers) {
                 let is_current = current_id == *id;
@@ -684,28 +655,19 @@ pub fn create_tray_menu(
                 } else {
                     provider.name.clone()
                 };
-                let item = CheckMenuItem::with_id(
-                    app,
+                let item = tray_menu_item(
                     format!("{}{}", section.prefix, id),
-                    &label,
-                    !is_official_blocked, // disabled when blocked
+                    label,
+                    !is_official_blocked,
                     is_current,
-                    None::<&str>,
-                )
-                .map_err(|e| {
-                    AppError::Message(format!("创建{}菜单项失败: {e}", section.log_name))
-                })?;
-                submenu_builder = submenu_builder.item(&item);
+                );
+                submenu_menu = submenu_menu.add_item(item);
             }
 
-            let submenu = submenu_builder.build().map_err(|e| {
-                AppError::Message(format!("构建{}子菜单失败: {e}", section.log_name))
-            })?;
-            section_handles.insert(section.app_type.clone(), submenu.clone());
-            menu_builder = menu_builder.item(&submenu);
+            menu = menu.add_submenu(SystemTraySubmenu::new(submenu_label, submenu_menu));
         }
 
-        menu_builder = menu_builder.separator();
+        menu = menu.add_native_item(SystemTrayMenuItem::Separator);
     }
 
     // 项目 Profile 子菜单：项目列表全应用共享，按分组嵌套子菜单各自勾选/应用
@@ -725,7 +687,8 @@ pub fn create_tray_menu(
             Vec::new()
         };
 
-        let mut scope_submenus = Vec::new();
+        let mut profiles_menu = SystemTrayMenu::new();
+        let mut has_profile_submenus = false;
         for scope in ProfileScope::ALL {
             if profiles.is_empty()
                 || !scope
@@ -745,116 +708,71 @@ pub fn create_tray_menu(
                 ProfileScope::ClaudeDesktop => "Claude Desktop",
                 ProfileScope::Codex => "Codex",
             };
-            let mut scope_builder = SubmenuBuilder::with_id(
-                app,
-                format!("submenu_profiles_{}", scope.as_str()),
-                scope_label,
-            );
+            let mut scope_menu = SystemTrayMenu::new();
             for profile in &profiles {
-                let item = CheckMenuItem::with_id(
-                    app,
+                let item = tray_menu_item(
                     format!("profile_{}_{}", scope.as_str(), profile.id),
-                    &profile.name,
+                    profile.name.clone(),
                     true,
                     current_profile_id == profile.id,
-                    None::<&str>,
-                )
-                .map_err(|e| AppError::Message(format!("创建项目菜单项失败: {e}")))?;
-                scope_builder = scope_builder.item(&item);
+                );
+                scope_menu = scope_menu.add_item(item);
             }
-            let none_item = CheckMenuItem::with_id(
-                app,
+            let none_item = tray_menu_item(
                 format!("profile_none_{}", scope.as_str()),
                 tray_texts.no_project_label,
                 true,
                 current_profile_id.is_empty(),
-                None::<&str>,
-            )
-            .map_err(|e| AppError::Message(format!("创建不使用项目菜单项失败: {e}")))?;
-            let scope_submenu = scope_builder
-                .separator()
-                .item(&none_item)
-                .build()
-                .map_err(|e| AppError::Message(format!("构建项目分组子菜单失败: {e}")))?;
-            scope_submenus.push(scope_submenu);
+            );
+            scope_menu = scope_menu
+                .add_native_item(SystemTrayMenuItem::Separator)
+                .add_item(none_item);
+            profiles_menu =
+                profiles_menu.add_submenu(SystemTraySubmenu::new(scope_label, scope_menu));
+            has_profile_submenus = true;
         }
 
-        if !scope_submenus.is_empty() {
-            let mut profiles_builder =
-                SubmenuBuilder::with_id(app, "submenu_profiles", tray_texts.projects_label);
-            for scope_submenu in &scope_submenus {
-                profiles_builder = profiles_builder.item(scope_submenu);
-            }
-            let profiles_submenu = profiles_builder
-                .build()
-                .map_err(|e| AppError::Message(format!("构建项目子菜单失败: {e}")))?;
-            menu_builder = menu_builder.item(&profiles_submenu).separator();
+        if has_profile_submenus {
+            menu = menu
+                .add_submenu(SystemTraySubmenu::new(
+                    tray_texts.projects_label,
+                    profiles_menu,
+                ))
+                .add_native_item(SystemTrayMenuItem::Separator);
         }
     }
 
-    let lightweight_item = CheckMenuItem::with_id(
-        app,
+    let lightweight_item = tray_menu_item(
         "lightweight_mode",
         tray_texts.lightweight_mode,
         true,
         crate::lightweight::is_lightweight_mode(),
-        None::<&str>,
-    )
-    .map_err(|e| AppError::Message(format!("创建轻量模式菜单失败: {e}")))?;
+    );
 
-    menu_builder = menu_builder.item(&lightweight_item).separator();
-
-    // 退出菜单（分隔符已在上面的 section 循环中添加）
-    let quit_item = MenuItem::with_id(app, "quit", tray_texts.quit, true, None::<&str>)
-        .map_err(|e| AppError::Message(format!("创建退出菜单失败: {e}")))?;
-
-    menu_builder = menu_builder.item(&quit_item);
-
-    let menu = menu_builder
-        .build()
-        .map_err(|e| AppError::Message(format!("构建菜单失败: {e}")))?;
-
-    *TRAY_SECTION_SUBMENUS
-        .lock()
-        .unwrap_or_else(|p| p.into_inner()) = section_handles;
-
-    Ok(menu)
+    Ok(menu
+        .add_item(lightweight_item)
+        .add_native_item(SystemTrayMenuItem::Separator)
+        .add_item(CustomMenuItem::new("quit", tray_texts.quit)))
 }
 
-/// 就地更新各 app 分区子菜单的标题（usage 后缀变化时走这条），
-/// 避免 `set_menu` 导致用户打开中的菜单被关闭。
-/// 句柄由上一次 `create_tray_menu` 填充；为空（从未构建过菜单）时无事发生。
-fn update_tray_usage_labels(app: &tauri::AppHandle) {
-    let Some(app_state) = app.try_state::<AppState>() else {
-        return;
-    };
-    let handles = match TRAY_SECTION_SUBMENUS.lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-
-    for section in TRAY_SECTIONS.iter() {
-        let Some(submenu) = handles.get(&section.app_type) else {
-            continue;
-        };
-        let Ok(providers) = app_state.db.get_all_providers(section.app_type.as_str()) else {
-            continue;
-        };
-        let Ok(Some(current_id)) =
-            crate::settings::get_effective_current_provider(&app_state.db, &section.app_type)
-        else {
-            continue;
-        };
-        let Some(provider) = providers.get(&current_id) else {
-            continue;
-        };
-        let suffix = format_usage_suffix(&app_state, &section.app_type, provider, &current_id)
-            .unwrap_or_default();
-        let new_label = format!("{} · {}{}", section.header_label, provider.name, suffix);
-        if let Err(e) = submenu.set_text(&new_label) {
-            log::debug!("[Tray] 更新{}子菜单标题失败: {e}", section.log_name);
-        }
+fn tray_menu_item(
+    id: impl Into<String>,
+    title: impl Into<String>,
+    enabled: bool,
+    selected: bool,
+) -> CustomMenuItem {
+    let item = CustomMenuItem::new(id, title);
+    let item = if enabled { item } else { item.disabled() };
+    if selected {
+        item.selected()
+    } else {
+        item
     }
+}
+
+/// Tauri v1 没有 v2 的子菜单句柄软更新能力，usage 变化时重建整套托盘菜单。
+fn update_tray_usage_labels(app: &tauri::AppHandle) {
+    refresh_tray_menu(app);
 }
 
 pub fn refresh_tray_menu(app: &tauri::AppHandle) {
@@ -862,8 +780,8 @@ pub fn refresh_tray_menu(app: &tauri::AppHandle) {
 
     if let Some(state) = app.try_state::<AppState>() {
         if let Ok(new_menu) = create_tray_menu(app, state.inner()) {
-            if let Some(tray) = app.tray_by_id(TRAY_ID) {
-                if let Err(e) = tray.set_menu(Some(new_menu)) {
+            if let Some(tray) = app.tray_handle_by_id(TRAY_ID) {
+                if let Err(e) = tray.set_menu(new_menu) {
                     log::error!("刷新托盘菜单失败: {e}");
                 }
             }
@@ -896,7 +814,7 @@ pub fn handle_tray_menu_event(app: &tauri::AppHandle, event_id: &str) {
 
     match event_id {
         "show_main" => {
-            if let Some(window) = app.get_webview_window("main") {
+            if let Some(window) = app.get_window("main") {
                 #[cfg(target_os = "windows")]
                 {
                     let _ = window.set_skip_taskbar(false);
@@ -919,7 +837,8 @@ pub fn handle_tray_menu_event(app: &tauri::AppHandle, event_id: &str) {
             }
         }
         "open_website" => {
-            if let Err(e) = app.opener().open_url("https://ccswitch.io", None::<String>) {
+            if let Err(e) = tauri::api::shell::open(&app.shell_scope(), "https://ccswitch.io", None)
+            {
                 log::error!("打开官方网站失败: {e}");
             }
         }
@@ -934,7 +853,13 @@ pub fn handle_tray_menu_event(app: &tauri::AppHandle, event_id: &str) {
         }
         "quit" => {
             log::info!("退出应用");
-            app.exit(0);
+            let app_handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                crate::save_window_state_before_exit(&app_handle);
+                crate::cleanup_before_exit(&app_handle).await;
+                crate::remove_tray_icon_before_exit(&app_handle);
+                std::process::exit(0);
+            });
         }
         _ => {
             if handle_profile_tray_event(app, event_id) {

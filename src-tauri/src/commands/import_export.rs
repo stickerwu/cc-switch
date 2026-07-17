@@ -3,7 +3,6 @@
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use tauri::State;
-use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::sync_support::{
     post_sync_warning_from_result, run_post_import_sync, success_payload_with_warning,
@@ -80,45 +79,39 @@ pub async fn sync_current_providers_live(state: State<'_, AppState>) -> Result<V
 /// 保存文件对话框
 #[tauri::command]
 pub async fn save_file_dialog<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
+    _app: tauri::AppHandle<R>,
     #[allow(non_snake_case)] defaultName: String,
 ) -> Result<Option<String>, String> {
-    let dialog = app.dialog();
-    let result = dialog
-        .file()
+    let result = tauri::api::dialog::blocking::FileDialogBuilder::new()
         .add_filter("SQL", &["sql"])
         .set_file_name(&defaultName)
-        .blocking_save_file();
+        .save_file();
 
-    Ok(result.map(|p| p.to_string()))
+    Ok(result.map(|p| p.to_string_lossy().to_string()))
 }
 
 /// 打开文件对话框
 #[tauri::command]
 pub async fn open_file_dialog<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
+    _app: tauri::AppHandle<R>,
 ) -> Result<Option<String>, String> {
-    let dialog = app.dialog();
-    let result = dialog
-        .file()
+    let result = tauri::api::dialog::blocking::FileDialogBuilder::new()
         .add_filter("SQL", &["sql"])
-        .blocking_pick_file();
+        .pick_file();
 
-    Ok(result.map(|p| p.to_string()))
+    Ok(result.map(|p| p.to_string_lossy().to_string()))
 }
 
 /// 打开 ZIP 文件选择对话框
 #[tauri::command]
 pub async fn open_zip_file_dialog<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
+    _app: tauri::AppHandle<R>,
 ) -> Result<Option<String>, String> {
-    let dialog = app.dialog();
-    let result = dialog
-        .file()
+    let result = tauri::api::dialog::blocking::FileDialogBuilder::new()
         .add_filter("ZIP / Skill", &["zip", "skill"])
-        .blocking_pick_file();
+        .pick_file();
 
-    Ok(result.map(|p| p.to_string()))
+    Ok(result.map(|p| p.to_string_lossy().to_string()))
 }
 
 // ─── Database backup management ─────────────────────────────

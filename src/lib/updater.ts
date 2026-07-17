@@ -1,4 +1,5 @@
 import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/tauri";
 
 export type UpdateChannel = "stable" | "beta";
 
@@ -27,21 +28,20 @@ export async function checkForUpdate(
 ): Promise<
   { status: "up-to-date" } | { status: "available"; info: UpdateInfo }
 > {
-  // 动态引入，避免在未安装插件时导致打包期问题
-  const { check } = await import("@tauri-apps/plugin-updater");
-
   const currentVersion = await getCurrentVersion();
-  const update = await check({ timeout: opts.timeout ?? 30000 } as any);
+  void opts;
 
-  if (!update) {
+  const availableVersion = await invoke<string | null>(
+    "check_app_update_available",
+  );
+
+  if (!availableVersion) {
     return { status: "up-to-date" };
   }
 
   const info: UpdateInfo = {
     currentVersion,
-    availableVersion: (update as any).version ?? "",
-    notes: (update as any).notes,
-    pubDate: (update as any).date,
+    availableVersion,
   };
 
   return { status: "available", info };

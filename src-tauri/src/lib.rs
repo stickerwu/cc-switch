@@ -63,16 +63,9 @@ pub use services::{
 };
 pub use settings::{update_settings, AppSettings};
 pub use store::AppState;
-use tauri_plugin_deep_link::DeepLinkExt;
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
-
 use std::sync::Arc;
-#[cfg(target_os = "macos")]
-use tauri::image::Image;
-use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::RunEvent;
-use tauri::{Emitter, Manager};
-use tauri_plugin_window_state::{AppHandleExt, StateFlags};
+use tauri::{Manager, SystemTray, SystemTrayEvent};
 
 #[cfg(target_os = "windows")]
 fn set_windows_app_user_model_id(app: &tauri::AppHandle) {
@@ -149,14 +142,14 @@ fn handle_deeplink_url(
                 request.name
             );
 
-            if let Err(e) = app.emit("deeplink-import", &request) {
+            if let Err(e) = app.emit_all("deeplink-import", &request) {
                 log::error!("✗ Failed to emit deeplink-import event: {e}");
             } else {
                 log::info!("✓ Emitted deeplink-import event to frontend");
             }
 
             if focus_main_window {
-                if let Some(window) = app.get_webview_window("main") {
+                if let Some(window) = app.get_window("main") {
                     let _ = window.unminimize();
                     let _ = window.show();
                     let _ = window.set_focus();
@@ -171,7 +164,7 @@ fn handle_deeplink_url(
         Err(e) => {
             log::error!("✗ Failed to parse deep link URL: {e}");
 
-            if let Err(emit_err) = app.emit(
+            if let Err(emit_err) = app.emit_all(
                 "deeplink-error",
                 serde_json::json!({
                     "url": url_str,
@@ -194,8 +187,8 @@ async fn update_tray_menu(
 ) -> Result<bool, String> {
     match tray::create_tray_menu(&app, state.inner()) {
         Ok(new_menu) => {
-            if let Some(tray) = app.tray_by_id(tray::TRAY_ID) {
-                tray.set_menu(Some(new_menu))
+            if let Some(tray) = app.tray_handle_by_id(tray::TRAY_ID) {
+                tray.set_menu(new_menu)
                     .map_err(|e| format!("更新托盘菜单失败: {e}"))?;
                 return Ok(true);
             }
@@ -208,70 +201,11 @@ async fn update_tray_menu(
     }
 }
 
-#[cfg(target_os = "macos")]
-fn macos_tray_icon() -> Option<Image<'static>> {
-    const ICON_BYTES: &[u8] = include_bytes!("../icons/tray/macos/statusbar_template_3x.png");
-
-    match Image::from_bytes(ICON_BYTES) {
-        Ok(icon) => Some(icon),
-        Err(err) => {
-            log::warn!("Failed to load macOS tray icon: {err}");
-            None
-        }
-    }
-}
-
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 设置 panic hook，在应用崩溃时记录日志到 <app_config_dir>/crash.log（默认 ~/.cc-switch/crash.log）
     panic_hook::setup_panic_hook();
 
-    let mut builder = tauri::Builder::default();
-
-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            log::info!("=== Single Instance Callback Triggered ===");
-            log::debug!("Args count: {}", args.len());
-            for (i, arg) in args.iter().enumerate() {
-                log::debug!("  arg[{i}]: {}", redact_url_for_log(arg));
-            }
-
-            if crate::lightweight::is_lightweight_mode() {
-                if let Err(e) = crate::lightweight::exit_lightweight_mode(app) {
-                    log::error!("退出轻量模式重建窗口失败: {e}");
-                }
-            }
-
-            // Check for deep link URL in args (mainly for Windows/Linux command line)
-            let mut found_deeplink = false;
-            for arg in &args {
-                if handle_deeplink_url(app, arg, false, "single_instance args") {
-                    found_deeplink = true;
-                    break;
-                }
-            }
-
-            if !found_deeplink {
-                log::info!("ℹ No deep link URL found in args (this is expected on macOS when launched via system)");
-            }
-
-            // Show and focus window regardless
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-                #[cfg(target_os = "linux")]
-                {
-                    linux_fix::nudge_main_window(window.clone());
-                }
-            }
-        }));
-    }
-
-    let builder = builder
-        // 注册 deep-link 插件（处理 macOS AppleEvent 和其他平台的深链接）
-        .plugin(tauri_plugin_deep_link::init())
+    let builder = tauri::Builder::default()
         // 拦截窗口关闭：根据设置决定是否最小化到托盘
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -281,7 +215,7 @@ pub fn run() {
                     .unwrap_or(false);
                 if in_db_recovery {
                     api.prevent_close();
-                    window.app_handle().exit(0);
+                    std::process::exit(0);
                     return;
                 }
 
@@ -296,79 +230,28 @@ pub fn run() {
                     }
                     #[cfg(target_os = "macos")]
                     {
-                        tray::apply_tray_policy(window.app_handle(), false);
+                        tray::apply_tray_policy(&window.app_handle(), false);
                     }
                 } else {
                     api.prevent_close();
-                    window.app_handle().exit(0);
+                    let app_handle = window.app_handle();
+                    tauri::async_runtime::spawn(async move {
+                        save_window_state_before_exit(&app_handle);
+                        cleanup_before_exit(&app_handle).await;
+                        remove_tray_icon_before_exit(&app_handle);
+                        std::process::exit(0);
+                    });
                 }
             }
         })
-        .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_store::Builder::new().build())
-        .plugin(
-            tauri_plugin_window_state::Builder::default()
-                .with_state_flags(window_state_flags())
-                .build(),
-        )
         .setup(|app| {
             let _ = rustls::crypto::ring::default_provider().install_default();
 
             // 预先刷新 Store 覆盖配置，确保后续路径读取正确（日志/数据库等）
-            app_store::refresh_app_config_dir_override(app.handle());
+            app_store::refresh_app_config_dir_override(&app.handle());
             panic_hook::init_app_config_dir(crate::config::get_app_config_dir());
             #[cfg(target_os = "windows")]
-            set_windows_app_user_model_id(app.handle());
-
-            // 注册 Updater 插件（桌面端）
-            #[cfg(desktop)]
-            {
-                if let Err(e) = app
-                    .handle()
-                    .plugin(tauri_plugin_updater::Builder::new().build())
-                {
-                    // 若配置不完整（如缺少 pubkey），跳过 Updater 而不中断应用
-                    log::warn!("初始化 Updater 插件失败，已跳过：{e}");
-                }
-            }
-            // 初始化日志（单文件输出到 <app_config_dir>/logs/cc-switch.log）
-            {
-                use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
-
-                let log_dir = panic_hook::get_log_dir();
-
-                // 确保日志目录存在
-                if let Err(e) = std::fs::create_dir_all(&log_dir) {
-                    eprintln!("创建日志目录失败: {e}");
-                }
-
-                // 启动时删除旧日志文件，实现单文件覆盖效果
-                let log_file_path = log_dir.join("cc-switch.log");
-                let _ = std::fs::remove_file(&log_file_path);
-
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        // 初始化为 Trace，允许后续通过 log::set_max_level() 动态调整级别
-                        .level(log::LevelFilter::Trace)
-                        .targets([
-                            Target::new(TargetKind::Stdout),
-                            Target::new(TargetKind::Folder {
-                                path: log_dir,
-                                file_name: Some("cc-switch".into()),
-                            }),
-                        ])
-                        // 单文件模式：启动时删除旧文件，达到大小时轮转
-                        // 注意：KeepSome(n) 内部会做 n-2 运算，n=1 会导致 usize 下溢
-                        // KeepSome(2) 是最小安全值，表示不保留轮转文件
-                        .rotation_strategy(RotationStrategy::KeepSome(2))
-                        // 单文件大小限制 1GB
-                        .max_file_size(1024 * 1024 * 1024)
-                        .timezone_strategy(TimezoneStrategy::UseLocal)
-                        .build(),
-                )?;
-            }
+            set_windows_app_user_model_id(&app.handle());
 
             // 注入 AppHandle 给 usage_events，让无 AppHandle 持有的写日志路径
             // 也能向前端推送 `usage-log-recorded`。
@@ -399,7 +282,7 @@ pub fn run() {
                         Err(e) => {
                             log::error!("加载旧配置文件失败: {e}");
                             // 弹出系统对话框让用户选择
-                            if !show_migration_error_dialog(app.handle(), &e.to_string()) {
+                            if !show_migration_error_dialog(&app.handle(), &e.to_string()) {
                                 // 用户选择退出（此时数据库还没创建，下次启动可以重试）
                                 log::info!("用户选择退出程序");
                                 std::process::exit(1);
@@ -435,7 +318,7 @@ pub fn run() {
                         supported_version: Some(crate::database::SCHEMA_VERSION),
                     });
                     // 主窗口默认 visible:false，恢复界面必须强制显示
-                    if let Some(window) = app.get_webview_window("main") {
+                    if let Some(window) = app.get_window("main") {
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
@@ -453,7 +336,7 @@ pub fn run() {
                     Err(e) => {
                         log::error!("Failed to init database: {e}");
 
-                        if !show_database_init_error_dialog(app.handle(), &db_path, &e.to_string())
+                        if !show_database_init_error_dialog(&app.handle(), &db_path, &e.to_string())
                         {
                             log::info!("用户选择退出程序");
                             std::process::exit(1);
@@ -826,121 +709,36 @@ pub fn run() {
             }
 
             // 迁移旧的 app_config_dir 配置到 Store
-            if let Err(e) = app_store::migrate_app_config_dir_from_settings(app.handle()) {
+            if let Err(e) = app_store::migrate_app_config_dir_from_settings(&app.handle()) {
                 log::warn!("迁移 app_config_dir 失败: {e}");
             }
 
             // 启动阶段不再无条件保存,避免意外覆盖用户配置。
 
-            // 注册 deep-link URL 处理器（使用正确的 DeepLinkExt API）
-            log::info!("=== Registering deep-link URL handler ===");
-
-            // Linux 和 Windows 调试模式需要显式注册
-            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
-            {
-                #[cfg(target_os = "linux")]
-                {
-                    // Use Tauri's path API to get correct path (includes app identifier)
-                    // tauri-plugin-deep-link writes to: ~/.local/share/com.ccswitch.desktop/applications/cc-switch-handler.desktop
-                    // Only register if .desktop file doesn't exist to avoid overwriting user customizations
-                    let should_register = app
-                        .path()
-                        .data_dir()
-                        .map(|d| !d.join("applications/cc-switch-handler.desktop").exists())
-                        .unwrap_or(true);
-
-                    if should_register {
-                        if let Err(e) = app.deep_link().register_all() {
-                            log::error!("✗ Failed to register deep link schemes: {}", e);
-                        } else {
-                            log::info!("✓ Deep link schemes registered (Linux)");
-                        }
-                    } else {
-                        log::info!("⊘ Deep link handler already exists, skipping registration");
-                    }
-                }
-
-                #[cfg(all(debug_assertions, windows))]
-                {
-                    if let Err(e) = app.deep_link().register_all() {
-                        log::error!("✗ Failed to register deep link schemes: {}", e);
-                    } else {
-                        log::info!("✓ Deep link schemes registered (Windows debug)");
-                    }
-                }
-            }
-
-            // 注册 URL 处理回调（所有平台通用）
-            app.deep_link().on_open_url({
-                let app_handle = app.handle().clone();
-                move |event| {
-                    log::info!("=== Deep Link Event Received (on_open_url) ===");
-                    let urls = event.urls();
-                    log::info!("Received {} URL(s)", urls.len());
-
-                    if crate::lightweight::is_lightweight_mode() {
-                        if let Err(e) = crate::lightweight::exit_lightweight_mode(&app_handle) {
-                            log::error!("退出轻量模式重建窗口失败: {e}");
-                        }
-                    }
-
-                    for (i, url) in urls.iter().enumerate() {
-                        let url_str = url.as_str();
-                        log::debug!("  URL[{i}]: {}", redact_url_for_log(url_str));
-
-                        if handle_deeplink_url(&app_handle, url_str, true, "on_open_url") {
-                            break; // Process only first ccswitch:// URL
-                        }
-                    }
-                }
-            });
-            log::info!("✓ Deep-link URL handler registered");
-
             // 创建动态托盘菜单
-            let menu = tray::create_tray_menu(app.handle(), &app_state)?;
+            let menu = tray::create_tray_menu(&app.handle(), &app_state)?;
 
-            // 构建托盘
-            let mut tray_builder = TrayIconBuilder::with_id(tray::TRAY_ID)
-                .tooltip("CC Switch") // 鼠标悬停提示
-                .on_tray_icon_event(|tray, event| match event {
-                    // 鼠标悬停/点击到托盘图标时，后台异步刷新用量缓存，
-                    // 让用户下一次（或快速打开菜单的那一刻）看到较新的数字。
-                    // refresh_all_usage_in_tray 内部有 10 秒防抖。
-                    TrayIconEvent::Enter { .. } | TrayIconEvent::Click { .. } => {
-                        let app = tray.app_handle().clone();
+            // 构建托盘（Tauri v1 API）
+            let tray_app = app.handle();
+            let tray_builder = SystemTray::new()
+                .with_id(tray::TRAY_ID)
+                .with_menu(menu)
+                .on_event(move |event| match event {
+                    SystemTrayEvent::MenuItemClick { id, .. } => {
+                        tray::handle_tray_menu_event(&tray_app, &id);
+                    }
+                    SystemTrayEvent::LeftClick { .. }
+                    | SystemTrayEvent::RightClick { .. }
+                    | SystemTrayEvent::DoubleClick { .. } => {
+                        let app = tray_app.clone();
                         tauri::async_runtime::spawn(async move {
                             crate::tray::refresh_all_usage_in_tray(&app).await;
                         });
                     }
-                    _ => log::debug!("unhandled event {event:?}"),
-                })
-                .menu(&menu)
-                .on_menu_event(|app, event| {
-                    tray::handle_tray_menu_event(app, &event.id.0);
-                })
-                .show_menu_on_left_click(true);
-
-            // 使用平台对应的托盘图标（macOS 使用模板图标适配深浅色）
+                    _ => {}
+                });
             #[cfg(target_os = "macos")]
-            {
-                if let Some(icon) = macos_tray_icon() {
-                    tray_builder = tray_builder.icon(icon).icon_as_template(true);
-                } else if let Some(icon) = app.default_window_icon() {
-                    log::warn!("Falling back to default window icon for tray");
-                    tray_builder = tray_builder.icon(icon.clone());
-                } else {
-                    log::warn!("Failed to load macOS tray icon for tray");
-                }
-            }
-
-            #[cfg(not(target_os = "macos"))]
-            {
-                if let Some(icon) = app.default_window_icon() {
-                    tray_builder = tray_builder.icon(icon.clone());
-                } else {
-                    log::warn!("Failed to get default window icon for tray");
-                }
-            }
+            let tray_builder = tray_builder.with_icon_as_template(true);
 
             let _tray = tray_builder.build(app)?;
             crate::services::webdav_auto_sync::start_worker(
@@ -1142,7 +940,7 @@ pub fn run() {
             // Linux: 禁用 WebKitGTK 硬件加速，防止 EGL 初始化失败导致白屏
             #[cfg(target_os = "linux")]
             {
-                if let Some(window) = app.get_webview_window("main") {
+                if let Some(window) = app.get_window("main") {
                     let _ = window.with_webview(|webview| {
                         use webkit2gtk::{WebViewExt, SettingsExt, HardwareAccelerationPolicy};
                         let wk_webview = webview.inner();
@@ -1156,7 +954,7 @@ pub fn run() {
 
             // 静默启动：根据设置决定是否显示主窗口
             let settings = crate::settings::get_settings();
-            if let Some(window) = app.get_webview_window("main") {
+            if let Some(window) = app.get_window("main") {
                 // 在窗口首次显示前同步装饰状态，避免前端加载后再切换导致标题栏闪烁
                 // 仅 Linux 生效：解决 Wayland 下系统窗口按钮不可用的问题
                 #[cfg(target_os = "linux")]
@@ -1167,7 +965,7 @@ pub fn run() {
                     #[cfg(target_os = "windows")]
                     let _ = window.set_skip_taskbar(true);
                     #[cfg(target_os = "macos")]
-                    tray::apply_tray_policy(app.handle(), false);
+                    tray::apply_tray_policy(&app.handle(), false);
                     log::info!("静默启动模式：主窗口已隐藏");
                 } else {
                     // 正常启动模式：显示窗口
@@ -1517,151 +1315,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
 
-    app.run(|app_handle, event| {
-        // 处理退出请求（所有平台）
-        if let RunEvent::ExitRequested { api, code, .. } = &event {
-            match classify_exit_request(*code) {
-                // code 为 None 表示运行时自动触发（如隐藏窗口的 WebView 被回收导致无存活窗口），
-                // 此时应仅阻止退出、保持托盘后台运行。
-                ExitRequestAction::StayInTray => {
-                    log::info!("运行时触发退出请求（无存活窗口），阻止退出以保持托盘后台运行");
-                    api.prevent_exit();
-                    return;
-                }
-                // code 为 RESTART_EXIT_CODE：app.restart() / 自更新 relaunch 发起的重启。
-                // 这条路径上 prevent_exit() 会被 Tauri 忽略，事件循环必定退出，随后由
-                // Tauri 在 RunEvent::Exit 后用新二进制 re-exec（macOS 会按更新后的
-                // Info.plist 解析可执行名）。
-                //
-                // 绝不能复用下面的异步清理任务：该任务在 tokio 线程调 save_window_state，
-                // 持有 window-state 插件锁的同时向主线程查询窗口几何；而主线程此刻正在
-                // 退出事件循环，并在插件自带的 RunEvent::Exit 钩子里等待同一把锁——双方
-                // 互等造成进程永久卡死（更新已安装但应用冻结、不再重启，见 #3998）。
-                //
-                // 重启路径交还 Tauri 默认流程即可：
-                //   - 窗口状态：插件 Exit 钩子在主线程保存（同线程读取窗口几何，无死锁）
-                //   - 托盘图标：Tauri 内部 cleanup_before_exit 清理，正常走 Drop
-                //   - 代理/Live 配置：无需恢复，重启后新实例立即接管并恢复代理状态
-                //   - 100ms 落盘等待：重启前的 DB 写入均为命令驱动、此刻已完成，
-                //     与所有 Tauri 应用默认重启路径的行为一致，无需额外等待
-                ExitRequestAction::DeferToTauriRestart => {
-                    log::info!("收到重启请求 (code={code:?})，交由 Tauri 默认重启流程 re-exec");
-                    return;
-                }
-                // 其它 Some(_)：用户主动调用 app.exit() 退出（如托盘菜单"退出"），
-                // 此时执行清理后退出。
-                ExitRequestAction::CleanupAndExit => {}
-            }
-
-            log::info!("收到用户主动退出请求 (code={code:?})，开始清理...");
+    app.run(|_app_handle, event| {
+        if let RunEvent::ExitRequested { api, .. } = &event {
+            log::info!("运行时触发退出请求，阻止退出以保持托盘后台运行");
             api.prevent_exit();
-
-            let app_handle = app_handle.clone();
-            tauri::async_runtime::spawn(async move {
-                save_window_state_before_exit(&app_handle);
-                cleanup_before_exit(&app_handle).await;
-                // 先于 std::process::exit 显式移除托盘图标。
-                // 进程直接退出时 Tauri 运行时不走正常 Drop 流程，
-                // 不会向 Windows Shell 发送 NIM_DELETE，导致已退出的进程
-                // 注册的图标仍残留在系统托盘（鼠标悬停 Shell 才会重绘发现进程已死）。
-                remove_tray_icon_before_exit(&app_handle);
-                log::info!("清理完成，退出应用");
-
-                // 短暂等待确保所有 I/O 操作（如数据库写入）刷新到磁盘
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-                // 使用 std::process::exit 避免再次触发 ExitRequested
-                std::process::exit(0);
-            });
-            return;
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            match event {
-                // macOS 在 Dock 图标被点击并重新激活应用时会触发 Reopen 事件，这里手动恢复主窗口
-                RunEvent::Reopen { .. } => {
-                    if let Some(window) = app_handle.get_webview_window("main") {
-                        #[cfg(target_os = "windows")]
-                        {
-                            let _ = window.set_skip_taskbar(false);
-                        }
-                        let _ = window.unminimize();
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                        tray::apply_tray_policy(app_handle, true);
-                    } else if crate::lightweight::is_lightweight_mode() {
-                        if let Err(e) = crate::lightweight::exit_lightweight_mode(app_handle) {
-                            log::error!("退出轻量模式重建窗口失败: {e}");
-                        }
-                    }
-                }
-                // 处理通过自定义 URL 协议触发的打开事件（例如 ccswitch://...）
-                RunEvent::Opened { urls } => {
-                    if let Some(url) = urls.first() {
-                        let url_str = url.to_string();
-                        log::info!("RunEvent::Opened with URL: {url_str}");
-
-                        if url_str.starts_with("ccswitch://") {
-                            if crate::lightweight::is_lightweight_mode() {
-                                if let Err(e) = crate::lightweight::exit_lightweight_mode(app_handle)
-                                {
-                                    log::error!("退出轻量模式重建窗口失败: {e}");
-                                }
-                            }
-
-                            // 解析并广播深链接事件，复用与 single_instance 相同的逻辑
-                            match crate::deeplink::parse_deeplink_url(&url_str) {
-                                Ok(request) => {
-                                    log::info!(
-                                        "Successfully parsed deep link from RunEvent::Opened: resource={}, app={:?}",
-                                        request.resource,
-                                        request.app
-                                    );
-
-                                    if let Err(e) =
-                                        app_handle.emit("deeplink-import", &request)
-                                    {
-                                        log::error!(
-                                            "Failed to emit deep link event from RunEvent::Opened: {e}"
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    log::error!(
-                                        "Failed to parse deep link URL from RunEvent::Opened: {e}"
-                                    );
-
-                                    if let Err(emit_err) = app_handle.emit(
-                                        "deeplink-error",
-                                        serde_json::json!({
-                                            "url": url_str,
-                                            "error": e.to_string()
-                                        }),
-                                    ) {
-                                        log::error!(
-                                            "Failed to emit deep link error event from RunEvent::Opened: {emit_err}"
-                                        );
-                                    }
-                                }
-                            }
-
-                            // 确保主窗口可见
-                            if let Some(window) = app_handle.get_webview_window("main") {
-                                let _ = window.unminimize();
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (app_handle, event);
         }
     });
 }
@@ -1723,8 +1380,8 @@ pub async fn cleanup_before_exit(app_handle: &tauri::AppHandle) {
 /// 在进程结束前干净地把图标摘掉。其它平台 `set_visible(false)` 也是
 /// 正常的隐藏/移除语义，作为跨平台兜底也安全。
 pub(crate) fn remove_tray_icon_before_exit(app_handle: &tauri::AppHandle) {
-    if let Some(tray) = app_handle.tray_by_id(tray::TRAY_ID) {
-        if let Err(e) = tray.set_visible(false) {
+    if let Some(tray) = app_handle.tray_handle_by_id(tray::TRAY_ID) {
+        if let Err(e) = tray.destroy() {
             log::warn!("退出时移除托盘图标失败: {e}");
         } else {
             log::info!("已显式从系统托盘移除图标");
@@ -1902,28 +1559,11 @@ fn show_migration_error_dialog(app: &tauri::AppHandle, error: &str) -> bool {
         )
     };
 
-    let retry_text = if is_chinese_locale() {
-        "重试"
-    } else {
-        "Retry"
-    };
-    let exit_text = if is_chinese_locale() {
-        "退出"
-    } else {
-        "Exit"
-    };
-
-    // 使用 blocking_show 同步等待用户响应
-    // OkCancelCustom: 第一个按钮（重试）返回 true，第二个按钮（退出）返回 false
-    app.dialog()
-        .message(&message)
-        .title(title)
-        .kind(MessageDialogKind::Error)
-        .buttons(MessageDialogButtons::OkCancelCustom(
-            retry_text.to_string(),
-            exit_text.to_string(),
-        ))
-        .blocking_show()
+    let _ = app;
+    tauri::api::dialog::blocking::MessageDialogBuilder::new(title, &message)
+        .kind(tauri::api::dialog::MessageDialogKind::Error)
+        .buttons(tauri::api::dialog::MessageDialogButtons::OkCancel)
+        .show()
 }
 
 /// 显示数据库初始化/Schema 迁移失败对话框
@@ -1969,74 +1609,16 @@ fn show_database_init_error_dialog(
         )
     };
 
-    let retry_text = if is_chinese_locale() {
-        "重试"
-    } else {
-        "Retry"
-    };
-    let exit_text = if is_chinese_locale() {
-        "退出"
-    } else {
-        "Exit"
-    };
-
-    app.dialog()
-        .message(&message)
-        .title(title)
-        .kind(MessageDialogKind::Error)
-        .buttons(MessageDialogButtons::OkCancelCustom(
-            retry_text.to_string(),
-            exit_text.to_string(),
-        ))
-        .blocking_show()
+    let _ = app;
+    tauri::api::dialog::blocking::MessageDialogBuilder::new(title, &message)
+        .kind(tauri::api::dialog::MessageDialogKind::Error)
+        .buttons(tauri::api::dialog::MessageDialogButtons::OkCancel)
+        .show()
 }
 
-// ============================================================
-// 退出请求分类
-// ============================================================
-
-/// `RunEvent::ExitRequested` 的三类来源，处理方式必须区分。
-///
-/// 关键约束：重启请求（`code == RESTART_EXIT_CODE`）上 `prevent_exit()` 会被
-/// Tauri 静默忽略（见 `ExitRequestApi::prevent_exit` 文档），事件循环必定继续
-/// 退出并触发各插件的 `RunEvent::Exit` 钩子；任何与之并发的自定义清理任务都
-/// 可能与插件退出钩子争用同一状态而死锁。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExitRequestAction {
-    /// `code` 为 `None`：运行时自动触发（如隐藏窗口的 WebView 被回收导致无存活
-    /// 窗口），阻止退出、保持托盘后台运行。
-    StayInTray,
-    /// `code` 为 `RESTART_EXIT_CODE`：`app.restart()` / 自更新 relaunch 发起的
-    /// 重启，不拦截、不做自定义清理，交还 Tauri 默认 re-exec 流程。
-    DeferToTauriRestart,
-    /// 其它 `Some(_)`：用户主动退出（托盘「退出」等），执行完整异步清理后结束进程。
-    CleanupAndExit,
-}
-
-fn classify_exit_request(code: Option<i32>) -> ExitRequestAction {
-    match code {
-        None => ExitRequestAction::StayInTray,
-        Some(tauri::RESTART_EXIT_CODE) => ExitRequestAction::DeferToTauriRestart,
-        Some(_) => ExitRequestAction::CleanupAndExit,
-    }
-}
-
-// ============================================================
-// 在应用主动退出前显式持久化窗口状态
-// ============================================================
-
-fn window_state_flags() -> StateFlags {
-    StateFlags::POSITION | StateFlags::SIZE | StateFlags::MAXIMIZED
-}
-
-/// 当前应用的退出路径会拦截 `ExitRequested` 并最终直接 `std::process::exit(0)`，
-/// 这里需要在真正结束进程前手动落盘，避免 window-state 插件的默认退出钩子被绕过。
-pub fn save_window_state_before_exit(app_handle: &tauri::AppHandle) {
-    if let Err(err) = app_handle.save_window_state(window_state_flags()) {
-        log::error!("退出前保存窗口状态失败: {err}");
-    } else {
-        log::info!("已在退出前保存窗口状态");
-    }
+/// UOS 兼容分支不启用 Tauri window-state 插件；保留函数作为退出流程兼容点。
+pub fn save_window_state_before_exit(_app_handle: &tauri::AppHandle) {
+    log::debug!("UOS build: window-state plugin disabled, skip saving window state");
 }
 
 /// 主动释放 single-instance 锁。
@@ -2044,14 +1626,13 @@ pub fn save_window_state_before_exit(app_handle: &tauri::AppHandle) {
 /// macOS single-instance 使用 `/tmp/{identifier}.sock`。我们有若干路径会直接
 /// `std::process::exit(0)`，不会触发插件挂在 `RunEvent::Exit` 上的清理钩子。
 /// 重启前主动 destroy 可以避免新进程误连旧 listener 后自行退出。
-pub fn destroy_single_instance_lock(app_handle: &tauri::AppHandle) {
-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    tauri_plugin_single_instance::destroy(app_handle);
+pub fn destroy_single_instance_lock(_app_handle: &tauri::AppHandle) {
+    log::debug!("UOS build: single-instance plugin disabled, skip lock cleanup");
 }
 
 /// 清理托盘图标、释放 single-instance 锁后重启当前应用。
 ///
-/// 直接走 `tauri::process::restart`（spawn 新进程 + `exit(0)`），不经过事件
+/// 直接走 `tauri::api::process::restart`（spawn 新进程 + `exit(0)`），不经过事件
 /// 循环退出，因此 Tauri 内部的 `cleanup_before_exit` 和各插件的
 /// `RunEvent::Exit` 钩子都不会执行。需要的清理由调用方与本函数显式补偿：
 /// 窗口状态、代理/Live 恢复（调用方）；托盘图标、single-instance 锁（本函数）。
@@ -2062,35 +1643,5 @@ pub fn destroy_single_instance_lock(app_handle: &tauri::AppHandle) {
 pub fn restart_process(app_handle: &tauri::AppHandle) -> ! {
     remove_tray_icon_before_exit(app_handle);
     destroy_single_instance_lock(app_handle);
-    tauri::process::restart(&app_handle.env());
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{classify_exit_request, ExitRequestAction};
-
-    #[test]
-    fn no_code_keeps_app_alive_in_tray() {
-        assert_eq!(classify_exit_request(None), ExitRequestAction::StayInTray);
-    }
-
-    #[test]
-    fn restart_exit_code_defers_to_tauri_default_restart() {
-        assert_eq!(
-            classify_exit_request(Some(tauri::RESTART_EXIT_CODE)),
-            ExitRequestAction::DeferToTauriRestart
-        );
-    }
-
-    #[test]
-    fn user_exit_codes_run_cleanup_then_exit() {
-        assert_eq!(
-            classify_exit_request(Some(0)),
-            ExitRequestAction::CleanupAndExit
-        );
-        assert_eq!(
-            classify_exit_request(Some(1)),
-            ExitRequestAction::CleanupAndExit
-        );
-    }
+    tauri::api::process::restart(&app_handle.env());
 }

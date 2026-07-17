@@ -6,7 +6,7 @@ use crate::database::FailoverQueueItem;
 use crate::provider::Provider;
 use crate::store::AppState;
 use std::str::FromStr;
-use tauri::Emitter;
+use tauri::Manager;
 
 /// 获取故障转移队列
 #[tauri::command]
@@ -168,13 +168,13 @@ pub async fn set_auto_failover_enabled(
             "providerId": p1_provider_id,
             "source": "failoverEnabled"
         });
-        let _ = app.emit("provider-switched", event_data);
+        let _ = app.emit_all("provider-switched", event_data);
     }
 
     // 刷新托盘菜单，确保状态同步
     if let Ok(new_menu) = crate::tray::create_tray_menu(&app, &state) {
-        if let Some(tray) = app.tray_by_id(crate::tray::TRAY_ID) {
-            let _ = tray.set_menu(Some(new_menu));
+        if let Some(tray) = app.tray_handle_by_id(crate::tray::TRAY_ID) {
+            let _ = tray.set_menu(new_menu);
         }
     }
 

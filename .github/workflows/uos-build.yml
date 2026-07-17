@@ -60,7 +60,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version-file: .node-version
+          node-version: '20'
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -85,7 +85,7 @@ jobs:
           ldd --version | head -1
 
       - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build UOS deb
         shell: bash
@@ -95,7 +95,7 @@ jobs:
           set -euxo pipefail
           mkdir -p release-assets
           set +e
-          pnpm tauri build --bundles deb --config '{"bundle":{"createUpdaterArtifacts":false}}' 2>&1 | tee release-assets/build.log
+          pnpm tauri build --bundles deb 2>&1 | tee release-assets/build.log
           status="${PIPESTATUS[0]}"
           set -e
           if [ "$status" -ne 0 ]; then

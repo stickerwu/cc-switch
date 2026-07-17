@@ -1,7 +1,6 @@
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
-use tauri_plugin_store::StoreExt;
 
 use crate::error::AppError;
 
@@ -21,19 +20,43 @@ fn update_cached_override(value: Option<PathBuf>) {
     }
 }
 
+fn store_path() -> PathBuf {
+    let base = dirs::config_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("cc-switch").join("app_paths.json")
+}
+
+fn read_store_file() -> serde_json::Map<String, Value> {
+    let path = store_path();
+    match std::fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str::<Value>(&content)
+            .ok()
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default(),
+        Err(_) => serde_json::Map::new(),
+    }
+}
+
+fn write_store_file(values: &serde_json::Map<String, Value>) -> Result<(), AppError> {
+    let path = store_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| AppError::Message(format!("创建 Store 目录失败: {e}")))?;
+    }
+    let content = serde_json::to_string_pretty(values)
+        .map_err(|e| AppError::Message(format!("序列化 Store 失败: {e}")))?;
+    std::fs::write(&path, content).map_err(|e| AppError::Message(format!("保存 Store 失败: {e}")))
+}
+
 /// 获取缓存中的 app_config_dir 覆盖路径
 pub fn get_app_config_dir_override() -> Option<PathBuf> {
     override_cache().read().ok()?.clone()
 }
 
 fn read_override_from_store(app: &tauri::AppHandle) -> Option<PathBuf> {
-    let store = match app.store_builder("app_paths.json").build() {
-        Ok(store) => store,
-        Err(e) => {
-            log::warn!("无法创建 Store: {e}");
-            return None;
-        }
-    };
+    let _ = app;
+    let store = read_store_file();
 
     match store.get(STORE_KEY_APP_CONFIG_DIR) {
         Some(Value::String(path_str)) => {
@@ -75,31 +98,29 @@ pub fn set_app_config_dir_to_store(
     app: &tauri::AppHandle,
     path: Option<&str>,
 ) -> Result<(), AppError> {
-    let store = app
-        .store_builder("app_paths.json")
-        .build()
-        .map_err(|e| AppError::Message(format!("创建 Store 失败: {e}")))?;
+    let mut store = read_store_file();
 
     match path {
         Some(p) => {
             let trimmed = p.trim();
             if !trimmed.is_empty() {
-                store.set(STORE_KEY_APP_CONFIG_DIR, Value::String(trimmed.to_string()));
+                store.insert(
+                    STORE_KEY_APP_CONFIG_DIR.to_string(),
+                    Value::String(trimmed.to_string()),
+                );
                 log::info!("已将 app_config_dir 写入 Store: {trimmed}");
             } else {
-                store.delete(STORE_KEY_APP_CONFIG_DIR);
+                store.remove(STORE_KEY_APP_CONFIG_DIR);
                 log::info!("已从 Store 中删除 app_config_dir 配置");
             }
         }
         None => {
-            store.delete(STORE_KEY_APP_CONFIG_DIR);
+            store.remove(STORE_KEY_APP_CONFIG_DIR);
             log::info!("已从 Store 中删除 app_config_dir 配置");
         }
     }
 
-    store
-        .save()
-        .map_err(|e| AppError::Message(format!("保存 Store 失败: {e}")))?;
+    write_store_file(&store)?;
 
     refresh_app_config_dir_override(app);
     Ok(())
