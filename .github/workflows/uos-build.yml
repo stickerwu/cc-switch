@@ -99,16 +99,30 @@ jobs:
           status="${PIPESTATUS[0]}"
           set -e
           if [ "$status" -ne 0 ]; then
+            awk '
+              /error(\[[A-Z0-9]+\])?:|could not compile|failed to build app/ {
+                for (i = NR - 8; i <= NR + 30; i++) want[i] = 1
+              }
+              { lines[NR] = $0 }
+              END {
+                for (i = 1; i <= NR; i++) {
+                  if (want[i]) print lines[i]
+                }
+              }
+            ' release-assets/build.log | tail -n 200 > release-assets/error-excerpt.log
+            if [ ! -s release-assets/error-excerpt.log ]; then
+              tail -n 160 release-assets/build.log > release-assets/error-excerpt.log
+            fi
             {
               echo "## UOS deb build failed"
               echo
               echo "Exit code: \`$status\`"
               echo
               echo '```text'
-              tail -n 160 release-assets/build.log
+              cat release-assets/error-excerpt.log
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
-            tail_text="$(tail -n 160 release-assets/build.log)"
+            tail_text="$(cat release-assets/error-excerpt.log)"
             tail_text="${tail_text//'%'/'%25'}"
             tail_text="${tail_text//$'\r'/'%0D'}"
             tail_text="${tail_text//$'\n'/'%0A'}"
