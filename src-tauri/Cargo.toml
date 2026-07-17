@@ -21,7 +21,7 @@ custom-protocol = ["tauri/custom-protocol"]
 test-hooks = []
 
 [build-dependencies]
-tauri-build = { version = "=1.2.1", features = [] }
+tauri-build = { version = "=1.5.6", features = [] }
 
 [dependencies]
 serde_json = { version = "1.0", features = ["preserve_order"] }
