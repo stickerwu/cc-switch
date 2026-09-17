@@ -52,7 +52,8 @@ jobs:
             libxdo-dev \
             file \
             patchelf \
-            xdg-utils
+            xdg-utils \
+            desktop-file-utils
 
       - name: Checkout
         uses: actions/checkout@v6
@@ -60,10 +61,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version-file: .node-version
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
 
       - name: Setup pnpm
         shell: bash
@@ -85,7 +88,12 @@ jobs:
           ldd --version
 
       - name: Install frontend dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Check frontend types and UOS API adapters
+        run: |
+          pnpm typecheck
+          pnpm test:unit tests/lib tests/utils tests/config tests/hooks --maxWorkers=2 --minWorkers=1
 
       - name: Build UOS deb
         shell: bash
@@ -95,7 +103,7 @@ jobs:
           set -euxo pipefail
           mkdir -p release-assets
           set +e
-          pnpm tauri build --bundles deb 2>&1 | tee release-assets/build.log
+          pnpm tauri build --bundles deb -- --locked 2>&1 | tee release-assets/build.log
           status="${PIPESTATUS[0]}"
           set -e
           if [ "$status" -ne 0 ]; then
@@ -142,15 +150,7 @@ jobs:
           mkdir -p release-assets
           VERSION="$(node -p "require('./package.json').version")"
           RELEASE_TAG="v${VERSION}-uos.${GITHUB_RUN_NUMBER}"
-          DEB="$(find src-tauri/target/release/bundle -name '*.deb' -type f | head -1)"
-          test -n "$DEB"
-          CONTROL="$(dpkg-deb -I "$DEB")"
-          printf '%s\n' "$CONTROL" | tee release-assets/control.txt
-          printf '%s\n' "$CONTROL" | grep -E 'Depends: .*libwebkit2gtk-4\.0'
-          printf '%s\n' "$CONTROL" | grep -E 'Depends: .*libayatana-appindicator3'
-          PACKAGE="release-assets/CC-Switch-v${VERSION}-UOS-amd64.deb"
-          cp "$DEB" "$PACKAGE"
-          sha256sum "$PACKAGE" | tee release-assets/SHA256SUMS
+          ./scripts/package-uos-deb.sh
           {
             echo "version=$VERSION"
             echo "release_tag=$RELEASE_TAG"
@@ -172,6 +172,10 @@ jobs:
             - Build environment: Debian buster
             - WebKitGTK ABI: 4.0
             - Package type: Debian `.deb`
+            - Minimum libc ABI: glibc 2.28 (checked from the ELF binary)
+            - UOS compatibility build; in-app upstream updates are disabled.
+
+            See `UOS-BUILD.md` in this branch for limitations and backup/rollback instructions.
 
             Install with:
 
@@ -182,6 +186,7 @@ jobs:
             release-assets/*.deb
             release-assets/SHA256SUMS
             release-assets/control.txt
+            release-assets/abi-report.txt
           fail_on_unmatched_files: true
 
       - name: Upload UOS deb artifact

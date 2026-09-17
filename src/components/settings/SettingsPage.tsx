@@ -352,9 +352,11 @@ export function SettingsPage({
                             claudeDir={settings.claudeConfigDir}
                             codexDir={settings.codexConfigDir}
                             geminiDir={settings.geminiConfigDir}
+                            grokDir={settings.grokConfigDir}
                             opencodeDir={settings.opencodeConfigDir}
                             openclawDir={settings.openclawConfigDir}
                             hermesDir={settings.hermesConfigDir}
+                            piDir={settings.piConfigDir}
                             onDirectoryChange={updateDirectory}
                             onBrowseDirectory={browseDirectory}
                             onResetDirectory={resetDirectory}
@@ -513,6 +515,12 @@ export function SettingsPage({
                   refreshIntervalMs={settings?.usageDashboardRefreshIntervalMs}
                   onRefreshIntervalChange={(usageDashboardRefreshIntervalMs) =>
                     handleAutoSave({ usageDashboardRefreshIntervalMs })
+                  }
+                  sessionAutoSyncEnabled={
+                    settings?.sessionAutoSyncEnabled ?? true
+                  }
+                  onSessionAutoSyncEnabledChange={(sessionAutoSyncEnabled) =>
+                    handleAutoSave({ sessionAutoSyncEnabled })
                   }
                 />
               </TabsContent>

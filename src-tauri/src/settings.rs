@@ -39,11 +39,15 @@ pub struct VisibleApps {
     #[serde(default = "default_true")]
     pub gemini: bool,
     #[serde(default = "default_true")]
+    pub grokbuild: bool,
+    #[serde(default = "default_true")]
     pub opencode: bool,
     #[serde(default = "default_true")]
     pub openclaw: bool,
     #[serde(default)]
     pub hermes: bool,
+    #[serde(default = "default_true")]
+    pub pi: bool,
 }
 
 impl Default for VisibleApps {
@@ -53,9 +57,11 @@ impl Default for VisibleApps {
             claude_desktop: true,
             codex: true,
             gemini: true,
+            grokbuild: true,
             opencode: true,
             openclaw: true,
             hermes: false, // 默认不显示，需用户手动启用
+            pi: true,
         }
     }
 }
@@ -68,9 +74,11 @@ impl VisibleApps {
             AppType::ClaudeDesktop => self.claude_desktop,
             AppType::Codex => self.codex,
             AppType::Gemini => self.gemini,
+            AppType::GrokBuild => self.grokbuild,
             AppType::OpenCode => self.opencode,
             AppType::OpenClaw => self.openclaw,
             AppType::Hermes => self.hermes,
+            AppType::Pi => self.pi,
         }
     }
 }
@@ -367,6 +375,11 @@ pub struct AppSettings {
     pub usage_confirmed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_dashboard_refresh_interval_ms: Option<u32>,
+    /// 会话用量自动扫描开关（默认开启=自动模式）。关闭后停止后台定时扫描
+    /// 各客户端会话日志，仅在用户点击"立即同步"时手动扫描；只管扫描时机，
+    /// 代理接管记账与启动费用回填（不读会话文件）不受此开关影响。
+    #[serde(default = "default_session_auto_sync_enabled")]
+    pub session_auto_sync_enabled: bool,
     /// Whether to show the failover toggle independently on the main page
     #[serde(default)]
     pub enable_failover_toggle: bool,
@@ -411,11 +424,15 @@ pub struct AppSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gemini_config_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grok_config_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opencode_config_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openclaw_config_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hermes_config_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi_config_dir: Option<String>,
 
     // ===== 当前供应商 ID（设备级）=====
     /// 当前 Claude 供应商 ID（本地存储，优先于数据库 is_current）
@@ -430,6 +447,9 @@ pub struct AppSettings {
     /// 当前 Gemini 供应商 ID（本地存储，优先于数据库 is_current）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_provider_gemini: Option<String>,
+    /// 当前 Grok Build 供应商 ID（本地存储，优先于数据库 is_current）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_provider_grokbuild: Option<String>,
     /// 当前 OpenCode 供应商 ID（本地存储，对 OpenCode 可能无意义，但保持结构一致）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_provider_opencode: Option<String>,
@@ -470,7 +490,7 @@ pub struct AppSettings {
 
     // ===== 终端设置 =====
     /// 首选终端应用（可选，默认使用系统默认终端）
-    /// - macOS: "terminal" | "iterm2" | "warp" | "alacritty" | "kitty" | "ghostty" | "wezterm" | "kaku"
+    /// - macOS: "terminal" | "iterm2" | "warp" | "alacritty" | "kitty" | "ghostty" | "otty" | "wezterm" | "kaku"
     /// - Windows: "cmd" | "powershell" | "wt" (Windows Terminal)
     /// - Linux: "gnome-terminal" | "konsole" | "xfce4-terminal" | "alacritty" | "kitty" | "ghostty"
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -493,6 +513,10 @@ fn default_show_profile_switcher() -> bool {
     true
 }
 
+fn default_session_auto_sync_enabled() -> bool {
+    true
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -507,6 +531,7 @@ impl Default for AppSettings {
             proxy_confirmed: None,
             usage_confirmed: None,
             usage_dashboard_refresh_interval_ms: None,
+            session_auto_sync_enabled: true,
             enable_failover_toggle: false,
             show_profile_switcher: true,
             preserve_codex_official_auth_on_switch: false,
@@ -520,13 +545,16 @@ impl Default for AppSettings {
             claude_config_dir: None,
             codex_config_dir: None,
             gemini_config_dir: None,
+            grok_config_dir: None,
             opencode_config_dir: None,
             openclaw_config_dir: None,
             hermes_config_dir: None,
+            pi_config_dir: None,
             current_provider_claude: None,
             current_provider_claude_desktop: None,
             current_provider_codex: None,
             current_provider_gemini: None,
+            current_provider_grokbuild: None,
             current_provider_opencode: None,
             current_provider_openclaw: None,
             current_provider_hermes: None,
@@ -575,6 +603,13 @@ impl AppSettings {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
+        self.grok_config_dir = self
+            .grok_config_dir
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
         self.opencode_config_dir = self
             .opencode_config_dir
             .as_ref()
@@ -591,6 +626,13 @@ impl AppSettings {
 
         self.hermes_config_dir = self
             .hermes_config_dir
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        self.pi_config_dir = self
+            .pi_config_dir
             .as_ref()
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
@@ -687,18 +729,25 @@ fn settings_store() -> &'static RwLock<AppSettings> {
     SETTINGS_STORE.get_or_init(|| RwLock::new(AppSettings::load_from_file()))
 }
 
-fn resolve_override_path(raw: &str) -> PathBuf {
+pub(crate) fn resolve_override_path(raw: &str) -> PathBuf {
+    let join_home = |home: PathBuf, suffix: &str| {
+        suffix
+            .split(['/', '\\'])
+            .filter(|component| !component.is_empty())
+            .fold(home, |path, component| path.join(component))
+    };
+
     if raw == "~" {
         if let Some(home) = dirs::home_dir() {
             return home;
         }
     } else if let Some(stripped) = raw.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
-            return home.join(stripped);
+            return join_home(home, stripped);
         }
     } else if let Some(stripped) = raw.strip_prefix("~\\") {
         if let Some(home) = dirs::home_dir() {
-            return home.join(stripped);
+            return join_home(home, stripped);
         }
     }
 
@@ -883,6 +932,14 @@ pub fn get_gemini_override_dir() -> Option<PathBuf> {
         .map(|p| resolve_override_path(p))
 }
 
+pub fn get_grok_override_dir() -> Option<PathBuf> {
+    let settings = settings_store().read().ok()?;
+    settings
+        .grok_config_dir
+        .as_ref()
+        .map(|p| resolve_override_path(p))
+}
+
 pub fn get_opencode_override_dir() -> Option<PathBuf> {
     let settings = settings_store().read().ok()?;
     settings
@@ -905,6 +962,14 @@ pub fn get_hermes_override_dir() -> Option<PathBuf> {
         .hermes_config_dir
         .as_ref()
         .map(|p| resolve_override_path(p))
+}
+
+pub fn get_pi_override_dir() -> Option<PathBuf> {
+    let settings = settings_store().read().ok()?;
+    settings
+        .pi_config_dir
+        .as_ref()
+        .map(|path| resolve_override_path(path))
 }
 
 pub fn preserve_codex_official_auth_on_switch() -> bool {
@@ -940,9 +1005,11 @@ pub fn get_current_provider(app_type: &AppType) -> Option<String> {
         AppType::ClaudeDesktop => settings.current_provider_claude_desktop.clone(),
         AppType::Codex => settings.current_provider_codex.clone(),
         AppType::Gemini => settings.current_provider_gemini.clone(),
+        AppType::GrokBuild => settings.current_provider_grokbuild.clone(),
         AppType::OpenCode => settings.current_provider_opencode.clone(),
         AppType::OpenClaw => settings.current_provider_openclaw.clone(),
         AppType::Hermes => settings.current_provider_hermes.clone(),
+        AppType::Pi => None,
     }
 }
 
@@ -957,9 +1024,11 @@ pub fn set_current_provider(app_type: &AppType, id: Option<&str>) -> Result<(), 
         AppType::ClaudeDesktop => settings.current_provider_claude_desktop = id_owned.clone(),
         AppType::Codex => settings.current_provider_codex = id_owned.clone(),
         AppType::Gemini => settings.current_provider_gemini = id_owned.clone(),
+        AppType::GrokBuild => settings.current_provider_grokbuild = id_owned.clone(),
         AppType::OpenCode => settings.current_provider_opencode = id_owned.clone(),
         AppType::OpenClaw => settings.current_provider_openclaw = id_owned.clone(),
         AppType::Hermes => settings.current_provider_hermes = id_owned.clone(),
+        AppType::Pi => {}
     })
 }
 
@@ -1149,5 +1218,14 @@ mod tests {
         .expect("visible apps");
 
         assert!(!visible.is_visible(&AppType::ClaudeDesktop));
+    }
+
+    #[test]
+    fn override_paths_expand_windows_style_tilde_separators() {
+        let home = dirs::home_dir().expect("home directory");
+        assert_eq!(
+            resolve_override_path(r"~\pi\agent"),
+            home.join("pi").join("agent")
+        );
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "cc-switch"
-version = "3.17.0"
+version = "3.20.3"
 description = "All-in-One Assistant for Claude Code, Codex & Gemini CLI"
 authors = ["Jason Young"]
 license = "MIT"
@@ -12,7 +12,8 @@ rust-version = "1.85.0"
 
 [lib]
 name = "cc_switch_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# This UOS desktop build does not need mobile static/shared libraries.
+crate-type = ["rlib"]
 doctest = false
 
 [features]
@@ -28,7 +29,7 @@ serde_json = { version = "1.0", features = ["preserve_order"] }
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
-tauri = { version = "=1.2.5", features = ["api-all", "icon-png", "protocol-asset", "system-tray"] }
+tauri = { version = "=1.2.5", features = ["api-all", "icon-png", "system-tray"] }
 dirs = "5.0"
 toml = "0.8"
 toml_edit = "0.22"
@@ -74,13 +75,21 @@ sha2 = "0.10"
 hmac = "0.12"
 json5 = "0.4"
 json-five = "0.3.1"
+sys-locale = "0.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = { version = "0.18.2", features = ["v2_22"] }
 
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"
-windows-sys = { version = "0.61", features = ["Win32_Globalization", "Win32_UI_Shell"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Globalization",
+    "Win32_Storage_FileSystem",
+    "Win32_UI_Shell",
+] }
 
 [target.'cfg(all(target_os = "windows", target_arch = "aarch64"))'.dependencies]
 rquickjs = { version = "0.8", features = ["bindgen"] }

@@ -29,3 +29,6 @@ copilot-api
 .history
 CODEBUDDY.md
 mainWindow.js
+
+# UOS release packages and validation reports
+/release-assets/
